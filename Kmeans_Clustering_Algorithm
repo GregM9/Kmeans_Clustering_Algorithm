@@ -1,0 +1,260 @@
+import math
+import random
+from scipy.stats import hypergeom, mannwhitneyu
+
+data = open('A2_data_input.txt','r')
+readfile = data.readlines()
+
+#Storage Matrices and # k assignment
+Normalized_DataLib = {}
+k = 4
+
+def Data_Normalizer(name,input_list):
+    '''list[1,2, ... n]  --> *list[1,2, ... n]
+
+    Gene expression data: Input comes as a list of numbers expressed as 'fragments per kilobase of transcript per million mapped reads (FPKM)'.
+    Code 1) converts all data to float, 2) calculates the mean 'sum(input_list)/len(input_list)', 3) calculates the standard deviation (STD) SQRT(sum(variance)/len(input_list)),
+         then 4) normalizes input_list data to ensure mean is 0 and STD is 1 (X-mean)/STD. Z-scores should be 1 in this case.
+
+    1) input_list = ['1','2','3','4','5'] --> [1.0,2.0,3.0,4.0,5.0]
+    2) mean = 3
+    3) STD = 1.4142
+    4) FPKM = OutPutList = [-1.414213562373095, -0.7071067811865475, 0.0, 0.7071067811865475, 1.414213562373095]
+       mean = 0, STD = 1.
+     '''
+    global formatted_list_titlenames
+    #1 Make sure all values are float
+    for j in range(0,len(input_list)):
+        input_list[j] = float(input_list[j])
+    #Normalizes within replicates: need to change below to input_list if you want to by-pass this part.
+    formatted_list = input_list
+    formatted_list_titlenames = titlenames
+    '''x = 0
+    while x < len(input_list):
+        if 'four_cell' in titlenames[x]:
+            formatted_list_titlenames.append(titlenames[x].replace('_blastomere1',''))
+            formatted_list.append((input_list[x]+input_list[x+1]+input_list[x+2]+input_list[x+3])/4)
+            x = x + 4
+        else:
+            formatted_list_titlenames.append(titlenames[x].replace('_blastomere1',''))                                 
+            formatted_list.append((input_list[x]+input_list[x+1])/2)
+            x = x + 2'''
+    #2 Calculate mean of data.
+    mean = sum(formatted_list)/len(formatted_list)
+    #3 Preprocess list data into variance around mean. Then calculate STD --> Correct.
+    STD_Calc = []
+    for k in range(0,len(formatted_list)):
+        STD_Calc.append(pow(formatted_list[k]- mean,2))
+    STD = math.sqrt((sum(STD_Calc)/len(STD_Calc)))
+    #4 Final processing of so that mean = 0 and STD = 1. Store values as Normalized_DataLib[(titlenames[l], name)] = (input_list[l] - mean)/STD) (corrected value)
+    for l in range(0,len(formatted_list)):
+        Normalized_DataLib[(formatted_list_titlenames[l], name)] = (formatted_list[l] - mean)/STD
+    
+    return Normalized_DataLib
+
+def Seed_Generator(Library,k):
+    '''Libary {key1: item1, ... keyn: itemn} --> list of k seeds [k1,k2,k3,k4...kn]
+
+    Need to generate random seeds to start k-means algorithm. Takes list of all possible keys in Normalized_Data library and picks k seeds at random to begin clustering.
+
+    seeds = Normalized_DataLib.keys() -- > [seed1, seed2, seed3, ... seedn]
+    '''
+    global change, seeds, original_seeds
+    seeds = [[] for _ in range(0,k)]
+    #Generate intitial random seeds
+    if change == len(Normalized_DataLib)+1:
+        seeds = [-0.40707673621475915, 0.0029468813466084964, -0.3514044043418073, 0.6727294520647309]
+        '''keys = list(Library.keys())
+        for n in range(0,k):
+            seeds[n] = Library[keys[random.randint(0,len(keys)-1)]]'''
+        original_seeds = seeds.copy()
+    #Re-evaluate seeds based on random points of previously calculated k clusters.
+    else:
+        for line in Library:
+            seeds[Library[line][1]].append(Library[line][0])
+        iteration = 0
+        for p in range(0,k):    
+            if iteration % 10 == 0:
+                seeds[p] = sorted(seeds[p],reverse=False)[0] #Closest value seeding
+                iteration = iteration + 1
+            else:
+                seeds[p] = sum(seeds[p])/len(seeds[p]) #Mean Seeding
+                iteration = iteration + 1
+            #seeds[p] = seeds[p][(len(seeds[p])/2)] #Centre seeding
+            #seeds[p] = sorted(seeds[p],reverse=False)[0] #Closest value seeding
+            #seeds[p] = seeds[p][random.randint(0,len(seeds[p])-1)] #Random Seeding
+            #seeds[p] = sum(seeds[p])/len(seeds[p]) #Mean Seeding
+    return seeds
+
+def Euclidean_Distance_Calculator(Library):
+    '''Datapoint(number),seeds(list k1, k2 ... kn) --> Datapoint(number), Euclidean Distance to nearest seed (number)
+
+    Need to take values and calculate Euclidean Distance to each of the seeds and append the seed # it is closest to.
+
+    Euclidean distance = q1 - r1 = Seed - Datapoint
+    '''
+    global change, operator
+    if change == len(Normalized_DataLib)+1:
+        for line in Library:
+            distances = []
+            for o in range(0,k):
+                distances.append([abs(seeds[o] - Library[line]), o])
+            Normalized_DataLib[line] = [Library[line], min(distances)[1]]
+        change = len(Normalized_DataLib)-1
+    else:
+        newchange = 0
+        for line in Library:
+            distances = []
+            previous = (Library[line][1])
+            for o in range(0,k):
+                distances.append([abs(seeds[o] - Library[line][0]), o])
+            Normalized_DataLib[line] = [Library[line][0], min(distances)[1]]
+            if previous == Normalized_DataLib[line][1]:
+                newchange = newchange + 1
+        operator = change - newchange
+
+    return Normalized_DataLib
+
+def Hypergeometric_Transformation(Library):
+    '''Normalized_DataLib[(SampleID, GeneName)] = [Normalized FPKM, k-Cluster] --> list of binary in associations in k clusters (0,1 if two-celled,four-celled in k -cluster)
+
+    Translates data from k-means clustering into binary associations (0,1 if two-celled,four-celled in k -cluster) within a cluster contained in a list.
+    Allows one to apply a two-sided hypergeometric test to see association of variables to each cluster.
+
+    Def'n of Hypergeometric distribution: the probability of k successes in n draws (without replacement) from a population of N with exactly K observations.
+    Remember each draw is a success or a failure.
+
+    Question 1b.
+    '''
+    #Gives list of associated titlenames delineated by two or four cell status
+    global clusters
+    twocell,fourcell,unknown = [],[],[]
+    for q in range(0,len(formatted_list_titlenames)):
+        if 'two_cell' in formatted_list_titlenames[q]:
+            twocell.append(formatted_list_titlenames[q])
+        elif 'four_cell' in formatted_list_titlenames[q]:
+            fourcell.append(formatted_list_titlenames[q])
+        else:
+            unknown.append(formatted_list_titlenames[q])
+    #evaluates whether or not sample (with associated gene) is two,four and assigns 0,1 to respective cluster
+    keys = Library.keys()
+    clusters = [[] for _ in range(0,k)]
+    zerocount = 0
+    onecount = 0
+    for line in keys:
+        if line[0] in twocell:
+            clusters[Library[line][1]].append(0)
+            zerocount = zerocount + 1
+        elif line[0] in fourcell:
+            clusters[Library[line][1]].append(1)
+            onecount = onecount + 1
+        else:
+            print('Unknown Assignment at: ', line, Library[line])
+
+    for r in range(0,k):
+        xzero,xone,M,n,N = clusters[r].count(0),clusters[r].count(1),len(Normalized_DataLib), onecount, len(clusters[r])
+        clusters[r] = [hypergeom.cdf(xzero-1,M,n,N),hypergeom.cdf(xone-1,M,n,N)]
+
+    return clusters
+
+def MannWhitneyU_Calculation(Library):
+    '''K cluster --> Wilcoxon Test statistic (Two sided Test)
+
+    Computes a wilcoxon rank sum test statistic for each gene in a cluster. Significance is defined
+    as an alpha of 0.05 with a bonferroni correction for each cluster. 0.05/len(cluster). If the wilcoxon text statistic
+    is less than corrected p value then that gene is significantly enriched in that cluster.
+    Report the genes that are significantly enriched in each cluster.
+
+    Question 1c.
+    '''
+    global SignificantGenes
+    alpha = 0.05
+    SignificantGenes = [[] for _ in range(0,k)]
+    #Creating array of unique genes in each cluster as a list of lists
+    uniquegenearray = [[] for _ in range(0,k)]
+    for line in Library:
+        if line[1] not in uniquegenearray[Library[line][1]]:
+            uniquegenearray[Normalized_DataLib[line][1]].append(line[1])
+                                          
+    def List_Generator(gene,cluster):
+        '''takes in a gene and cluster assignment and creates two lists.
+            list1 --> all genes in a subcluster list2 --> all other genes in that cluster
+        '''
+        global list1, list2
+        list1,list2 = [],[]
+        for line in Library:
+            if gene in line and Library[line][1] == cluster:
+                list1.append(Library[line][0])
+            elif gene not in line and Library[line][1] == cluster: #add this line in to control whether or not all other datasets are seen as positive or not.
+                list2.append(Library[line][0])
+
+        return list1,list2
+
+    #Main block of code to execute.
+    for g in range(0,k):
+        for h in range(0,len(uniquegenearray[g])):
+            List_Generator(uniquegenearray[g][h],g)
+            Result = mannwhitneyu(list1,list2,use_continuity=True,alternative='two-sided')
+            test, bonferroni = Result[1], len(list2)
+            if test <= float(alpha/bonferroni):
+                SignificantGenes[g].append([uniquegenearray[g][h],test])
+                
+    return SignificantGenes
+
+def Data_Output_Organizer(Question1,Question2,Question3):
+    '''Takes in input from k means clustering algorithm, hypergeometric test, and mannwhitney u test
+    '''
+    #Question 1 Output.
+    print('Question 1a. k-means clustering algorithm. Output is showing number of Sample-Gene datapoints per cluster. ')
+    print('Original Seeds: ', original_seeds)
+    for x in range(0,k):
+        count = 0
+        for line in Normalized_DataLib:
+            if Normalized_DataLib[line][1] == x:
+                count = count + 1
+        print('Cluster', x+1,': ', count,)
+
+    #Question 2 Output.
+    print('\n')
+    print('Question 1b. Two-sided hypergeometric test of two/four-cell blastomere sample enrichment in k = 4 clusters. ')
+    for y in range(0,k):
+        if clusters[y][0] <= 0.05:
+            print('Cluster ', y+1, ' is enriched for two-cell blastomere samples. p-value = ', clusters[y][0])
+        elif clusters[y][1] <= 0.05:
+            print('Cluster ', y+1, ' is enriched for four-cell blastomere samples. p-value = ', clusters[y][1])
+        else:
+            print('Cluster ', y+1, ' is not enriched for either two/four-cell blastomere samples')
+
+    #Question 3 Output.
+    print('\n')
+    print('Question 1c. MannWhitneyU test for significantly enriched or depleted genes within k = 4 clusters.')
+    for z in range(0,k):
+        if len(SignificantGenes[z]) == 0:
+            print('Cluster ', z+1, ': No genes were significantly enriched or depleted in cluster.')
+        else:
+            print('\n')
+            print('Cluster ', z+1, ':')
+            for t in range(0,len(SignificantGenes[z])):
+                print(SignificantGenes[z][t][0], 'p-value = ', SignificantGenes[z][t][1])
+    return None        
+                
+
+#Main block of code to execute data transformation etc.
+#Question 1a.
+for z in range(0,1):
+    titlenames = readfile[0].replace('\n','').split('\t')[1:]
+    for i in range(1,len(readfile)):
+        hold = readfile[i].replace('\n','').split('\t')
+        Data_Normalizer(hold[0].replace('\n',''),hold[1:])
+        if i == len(readfile)-1:
+            change = len(Normalized_DataLib)+1
+            operator = change - 0
+            while operator > 0:
+                Seed_Generator(Normalized_DataLib,k)
+                Euclidean_Distance_Calculator(Normalized_DataLib)
+            #Takes processed data and assigns 0,1 for two,four celled blastomeres in respective cluster.
+            print('Complete k-clustering...')
+            Hypergeometric_Transformation(Normalized_DataLib)
+            print('Complete HyperGeometric...')
+            MannWhitneyU_Calculation(Normalized_DataLib)
+            Data_Output_Organizer(Normalized_DataLib,clusters,None)
